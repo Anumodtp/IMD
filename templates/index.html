@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" type="text/css" href="{{ url_for('static', filename='css/style.css') }}">
+    <title>Image Manipulation Detection</title>
+</head>
+
+<body>
+    <h1>Image Manipulation Detection</h1>
+    <div class="container">
+        <form id="upload-form" action="/" method="POST" enctype="multipart/form-data">
+            <label for="image-upload">Upload an Image (JPEG, PNG, or BMP only):</label><br>
+            <input type="file" id="image-upload" name="file" accept="image/jpeg,image/png,image/bmp" required>
+            <br>
+            <button class="button-58" type="submit" id="submit-button" disabled>Check</button>
+        </form>
+    </div>
+
+
+    <script>
+        const imageUpload = document.getElementById('image-upload');
+        const submitButton = document.getElementById('submit-button');
+
+        imageUpload.addEventListener('change', function () {
+            if (imageUpload.files.length > 0) {
+                submitButton.disabled = false;
+            } else {
+                submitButton.disabled = true;
+            }
+        });
+    </script>
+</body>
+
+</html>
+
