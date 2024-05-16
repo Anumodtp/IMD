@@ -1,12 +1,14 @@
-from flask import Flask, request, render_template, redirect, url_for, flash, send_file, Response
+from flask import Flask, request, render_template, redirect, url_for, flash
 from werkzeug.utils import secure_filename
 import cv2
 import numpy as np
-from tensorflow.keras.models import load_model
-import matplotlib.pyplot as plt
+from mtcnn import MTCNN
 import os
-from io import BytesIO
-import io
+import base64
+from tensorflow.keras.preprocessing.image import load_img, img_to_array
+from tensorflow.keras.applications.inception_v3 import preprocess_input
+from tensorflow.keras.models import load_model  # Add this import
+import numpy as np  # Add this import
 
 # Initialize the Flask application
 app = Flask(__name__)
@@ -20,15 +22,29 @@ os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 # Allowed file extensions
 ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'webp'}
 
-# Load the trained deepfake image manipulation detection model
-model = load_model('model_xception_deepfake.h5')
+# Initialize MTCNN for face detection
+detector = MTCNN()
 
-# Load the Haar cascade for face detection
-face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+# Define padding percentage
+padding_percentage = 0.11
 
 # Define a function to check allowed file extensions
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+
+# Function to preprocess a single image and predict its class
+def predict_single_image(image_path):
+    model = load_model('updated_model.h5')
+    img = load_img(image_path, target_size=(299, 299))
+    img_array = img_to_array(img)
+    img_array = preprocess_input(img_array)
+    img_array = np.expand_dims(img_array, axis=0)
+    prediction = model.predict(img_array)
+    print(prediction)
+    if prediction[0][0] < 0.5:
+        return "Fake"
+    else:
+        return "Real"
 
 @app.route('/', methods=['GET', 'POST'])
 def upload_file():
@@ -55,70 +71,60 @@ def upload_file():
 
             # Load the image using OpenCV
             image = cv2.imread(file_path)
-
-            # Convert the image to grayscale for face detection
-            gray_image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+            image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 
             # Detect faces in the image
-            faces = face_cascade.detectMultiScale(gray_image, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30))
+            faces = detector.detect_faces(image_rgb)
 
             # Check if any faces were detected
             if len(faces) == 0:
-                print("No faces detected in the image.")
+                flash("No faces detected in the uploaded image.")
+                return redirect(request.url)
             else:
-                # Initialize a dictionary to store unique faces and their predictions
-                face_data = {}
-
                 # Iterate through the detected faces
-                for (x, y, w, h) in faces:
-                    # Crop the image around the detected face
-                    face_crop = image[y:y + h, x:x + w]
+                for face in faces:
+                    x, y, w, h = face['box']
+                    # Calculate padding
+                    pad_x = int(w * padding_percentage)
+                    pad_y = int(h * padding_percentage)
+                    # Expand bounding box coordinates
+                    x -= pad_x
+                    y -= pad_y
+                    w += 2 * pad_x
+                    h += 2 * pad_y
+                    # Ensure the bounding box is within image bounds
+                    x = max(x, 0)
+                    y = max(y, 0)
+                    w = min(w, image.shape[1] - x)
+                    h = min(h, image.shape[0] - y)
 
-                    # Resize the cropped face to match the model's input shape (224, 224)
-                    face_crop_resized = cv2.resize(face_crop, (224, 224))
+                    # Crop the image around the expanded bounding box
+                    padded_face = image_rgb[y:y+h, x:x+w]
 
-                    # Normalize the face crop
-                    face_crop_normalized = face_crop_resized / 255.0
+                    # Preprocess the padded face
+                    preprocessed_face = preprocess_input(cv2.resize(padded_face, (299, 299)))
 
-                    # Predict using the model
-                    prediction = model.predict(np.expand_dims(face_crop_normalized, axis=0))[0][0]
+                    # Make predictions using the model
+                    prediction_label = predict_single_image(file_path)
 
-                    # Store the unique face and its prediction in the dictionary
-                    face_data[(x, y, w, h)] = prediction
+                    # Determine border color based on prediction
+                    border_color = (0, 255, 0) if prediction_label == "Real" else (255, 0, 0)
 
-                # Define a threshold value for classification
-                threshold = 0.5
+                    # Draw bounding box around the detected face with border color
+                    cv2.rectangle(image_rgb, (x, y), (x + w, y + h), border_color, 2)
 
-                # Clear any previous plot
-                plt.clf()
+                    # Put prediction label on top of bounding box
+                    cv2.putText(image_rgb, prediction_label, (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, border_color, 2)
 
-                # Create a new plot for the current image
-                plt.imshow(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
+                # Encode the image to base64 for embedding in HTML
+                _, img_encoded = cv2.imencode('.jpg', cv2.cvtColor(image_rgb, cv2.COLOR_RGB2BGR))
+                img_data = base64.b64encode(img_encoded).decode('utf-8')
 
-                # Iterate through unique face data and plot results
-                for (x, y, w, h), prediction in face_data.items():
-                    # Determine whether the face is real or fake based on the prediction
-                    label = "Fake" if prediction > threshold else "Real"
-                    color = 'blue' if label == "Fake" else 'green'
-
-                    # Plot bounding box and label
-                    plt.gca().add_patch(plt.Rectangle((x, y), w, h, linewidth=1, edgecolor=color, facecolor='none'))
-                    plt.text(x, y - 10, label, color='white', backgroundcolor=color)
-
-                # Save the plot image to an in-memory file
-                img_io = io.BytesIO()
-                plt.axis('off')
-                plt.savefig(img_io, format='png')
-
-                # Reset the buffer's position to the beginning
-                img_io.seek(0)
-
-                # Return the in-memory file as a response
-                return Response(img_io.getvalue(), content_type='image/png')
+                # Render the result page with the image data
+                return render_template('index.html', img_data=img_data)
 
     # Render the upload page
     return render_template('index.html')
-
 
 if __name__ == '__main__':
     app.run(debug=True)
